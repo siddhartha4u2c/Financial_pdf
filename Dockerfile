@@ -25,6 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # Copy application source code
 COPY src/ ./src
+COPY UI/ ./UI
 
 # Expose FastAPI application port
 EXPOSE 8000

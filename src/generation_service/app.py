@@ -6,6 +6,7 @@ import os
 import sys
 import urllib.request
 from fastapi import FastAPI, HTTPException, status
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 # Ensure root directory is in the path
@@ -160,6 +161,12 @@ def health_check():
             "llm_initialized": llm_ok
         }
     }
+
+# Serves the static UI (index.html/app.js/style.css) so the whole app is reachable on a
+# single port -- important for deployment, where the browser only knows the server's
+# public address and can't reach a separate "localhost" UI port. Mounted last so it
+# doesn't shadow the API routes/docs registered above.
+app.mount("/", StaticFiles(directory=os.path.join(PROJECT_ROOT, "UI"), html=True), name="ui")
 
 if __name__ == "__main__":
     import uvicorn

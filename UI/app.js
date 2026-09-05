@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const imagesContainer = document.getElementById('images-container');
     const answerContainer = document.getElementById('answer-container');
 
-    const API_URL = 'http://localhost:8000/query';
+    const API_URL = '/query';
 
     form.addEventListener('submit', async (event) => {
         event.preventDefault();

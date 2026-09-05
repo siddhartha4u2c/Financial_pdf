@@ -1,3 +1,7 @@
+// Static frontend for the RAG API (src/generation_service/app.py). Submits the question
+// to POST /query and renders the two parts of the response: the retrieved text chunks
+// (left panel, "evidence") and the LLM-generated answer (right panel, rendered as
+// markdown via Marked.js since Gemini's response often contains lists/headings).
 document.addEventListener('DOMContentLoaded', () => {
     const form = document.getElementById('query-form');
     const questionInput = document.getElementById('question');
@@ -39,26 +43,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const data = await response.json();
             
-            // 1. Render base64 context images on the left
-            if (data.images && data.images.length > 0) {
-                data.images.forEach((imgB64, index) => {
+            // 1. Render retrieved text chunks on the left
+            if (data.chunks && data.chunks.length > 0) {
+                data.chunks.forEach((chunk, index) => {
                     const card = document.createElement('div');
                     card.className = 'image-card';
-                    
+
                     const header = document.createElement('div');
                     header.className = 'image-header';
-                    header.innerHTML = `<span>Page Reference ${index + 1}</span>`;
-                    
-                    const img = document.createElement('img');
-                    img.src = `data:image/jpeg;base64,${imgB64}`;
-                    img.alt = `Reference Page ${index + 1}`;
-                    
+                    const pageLabel = chunk.page_number ? `Page ${chunk.page_number}` : `Excerpt ${index + 1}`;
+                    header.innerHTML = `<span>${pageLabel}</span>`;
+
+                    const body = document.createElement('p');
+                    body.className = 'chunk-text';
+                    body.textContent = chunk.text;
+
                     card.appendChild(header);
-                    card.appendChild(img);
+                    card.appendChild(body);
                     imagesContainer.appendChild(card);
                 });
             } else {
-                imagesContainer.innerHTML = '<p class="info-text">No reference pages were returned for this query.</p>';
+                imagesContainer.innerHTML = '<p class="info-text">No reference excerpts were returned for this query.</p>';
             }
 
             // 2. Render markdown text answer on the right using Marked.js

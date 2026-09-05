@@ -1,17 +1,19 @@
+<!-- Static frontend for src/generation_service/app.py's /query endpoint. See UI/app.js
+     for the fetch call and response rendering. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Financial RAG Assistant</title>
+    <title>RAG Document Assistant</title>
     <link rel="stylesheet" href="style.css">
     <!-- Marked.js for markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body>
     <header class="app-header">
-        <h1>📊 Multimodal Financial RAG Assistant</h1>
-        <p>Ask questions about your financial documents and view reference pages side-by-side with the answer.</p>
+        <h1>📖 RAG Document Assistant</h1>
+        <p>Ask questions about your ingested PDFs and view the retrieved source excerpts side-by-side with the answer.</p>
     </header>
 
     <main class="app-container">
@@ -19,7 +21,7 @@
             <form id="query-form" class="query-form">
                 <div class="input-group">
                     <label for="question">Ask a question:</label>
-                    <input type="text" id="question" required placeholder="e.g. What is JPMorgan's net income in 2023?" autocomplete="off">
+                    <input type="text" id="question" required placeholder="e.g. What is the MiG-29's service ceiling?" autocomplete="off">
                 </div>
                 <div class="config-group">
                     <div class="slider-group">
@@ -35,9 +37,9 @@
         <section id="results" class="results-layout hidden">
             <!-- Left Side: Reference Images -->
             <div class="panel reference-panel">
-                <h2>📄 Reference Document Pages</h2>
+                <h2>📄 Reference Excerpts</h2>
                 <div id="images-container" class="images-container">
-                    <!-- Base64 pages will be rendered here dynamically -->
+                    <!-- Retrieved text chunks will be rendered here dynamically -->
                 </div>
             </div>
 

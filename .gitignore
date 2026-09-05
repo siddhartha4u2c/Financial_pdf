@@ -2,3 +2,9 @@
 .venv/
 venv
 .venv
+__pycache__/
+*.pyc
+qdrant_storage/
+~$*.docx
+~$*.doc
+.DS_Store

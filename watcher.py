@@ -1,3 +1,7 @@
+# Background ingestion service: polls data/ for new or changed PDFs and, for each one,
+# runs it through the pipeline (partition -> chunk -> embed -> store in Qdrant) so the
+# generation service always has up-to-date content to search over. Run via run_watcher.sh
+# or directly with `python watcher.py`.
 import os
 import sys
 import time
@@ -13,7 +17,7 @@ sys.path.append(PROJECT_ROOT)
 load_dotenv(dotenv_path=os.path.join(PROJECT_ROOT, '.env'))
 load_dotenv(dotenv_path=os.path.join(PROJECT_ROOT, 'src', '.env'))
 
-from src.embedding_service.document_processor import pdf_to_images, image_to_base64
+from src.embedding_service.document_processor import pdf_to_chunks
 from src.embedding_service.embedder import GeminiEmbedder
 from src.embedding_service.qdrant_manager import QdrantManager
 
@@ -23,7 +27,10 @@ COLLECTION_NAME = "financial_documents"
 QDRANT_URL = "http://localhost:6333"
 
 def load_processed_state():
-    """Loads the dictionary of processed files from the local state file."""
+    """Loads the dictionary of processed files from the local state file.
+    Keyed by filename -> {mtime, size, processed_at}, used by check_and_process_folder()
+    to detect new/changed PDFs without re-ingesting (and re-billing Gemini calls for)
+    files that haven't changed since the last run."""
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
@@ -41,7 +48,9 @@ def save_processed_state(state):
         print(f"Error: Could not save processed state file: {e}")
 
 def init_qdrant_manager():
-    """Initializes and returns a QdrantManager, connecting to Docker if available."""
+    """Initializes and returns a QdrantManager, connecting to Docker if available.
+    Same server-detection pattern as src/generation_service/app.py -- both the watcher
+    (which writes) and the API service (which reads) need to agree on where Qdrant lives."""
     use_server = False
     try:
         with urllib.request.urlopen(f"{QDRANT_URL.rstrip('/')}/healthz", timeout=1.0) as response:
@@ -59,30 +68,28 @@ def init_qdrant_manager():
         return QdrantManager(path=qdrant_path, collection_name=COLLECTION_NAME)
 
 def ingest_pdf(pdf_path, qdrant_manager, embedder):
-    """Converts a PDF to images, generates Gemini embeddings, and saves to Qdrant."""
+    """Partitions a PDF into text chunks via unstructured.io, generates Gemini text embeddings, and saves to Qdrant."""
     filename = os.path.basename(pdf_path)
     try:
         print(f"\n--- Ingesting {filename} ---")
-        # 1. Convert PDF to images
-        images = pdf_to_images(pdf_path)
-        if not images:
-            print(f"No pages found or error converting PDF: {pdf_path}")
+        # 1. Partition the PDF into text chunks
+        chunks = pdf_to_chunks(pdf_path)
+        if not chunks:
+            print(f"No text chunks extracted from PDF: {pdf_path}")
             return False
-            
-        base64_images = [image_to_base64(img) for img in images]
-        
-        # 2. Embed the images using Gemini
-        image_embeddings = []
-        for idx, img in enumerate(images):
-            print(f"Embedding page {idx + 1}/{len(images)}...")
-            emb = embedder.embed_image(img)
-            image_embeddings.append(emb)
-            
-        vector_size = len(image_embeddings[0]) if image_embeddings else 768
-        
+
+        # 2. Embed each chunk's text using Gemini
+        chunk_embeddings = []
+        for idx, chunk in enumerate(chunks):
+            print(f"Embedding chunk {idx + 1}/{len(chunks)}...")
+            emb = embedder.embed_text(chunk["text"])
+            chunk_embeddings.append(emb)
+
+        vector_size = len(chunk_embeddings[0]) if chunk_embeddings else 768
+
         # 3. Store in Qdrant
         qdrant_manager.ensure_collection(vector_size=vector_size)
-        qdrant_manager.insert_image_embeddings(image_embeddings, base64_images)
+        qdrant_manager.insert_text_chunks(chunk_embeddings, chunks, source_file=filename)
         print(f"Successfully ingested {filename} into Qdrant collection '{COLLECTION_NAME}'")
         return True
     except Exception as e:
@@ -90,7 +97,8 @@ def ingest_pdf(pdf_path, qdrant_manager, embedder):
         return False
 
 def check_and_process_folder(qdrant_manager, embedder):
-    """Scans the data directory and processes any new or updated PDF files."""
+    """Scans the data directory and processes any new or updated PDF files.
+    Called once at startup (initial backfill) and then every 5s from the main loop below."""
     if not os.path.exists(DATA_DIR):
         print(f"Creating data directory: {DATA_DIR}")
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -101,16 +109,17 @@ def check_and_process_folder(qdrant_manager, embedder):
 
     # Get all PDF files in the data directory
     pdf_files = [f for f in os.listdir(DATA_DIR) if f.lower().endswith(".pdf")]
-    
+
     for filename in pdf_files:
         pdf_path = os.path.join(DATA_DIR, filename)
-        
+
         # Gather file stats for change detection
         stat = os.stat(pdf_path)
         mtime = stat.st_mtime
         size = stat.st_size
-        
-        # Check if we should process the file (not processed, or file changed)
+
+        # mtime+size is a cheap stand-in for a content hash: good enough to detect "this
+        # file was replaced/edited" without reading the whole PDF on every 5s poll.
         should_process = True
         if filename in processed_state:
             old_mtime = processed_state[filename].get("mtime")

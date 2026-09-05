@@ -1,3 +1,6 @@
+/* Two-panel results layout: retrieved text excerpts (left, .images-container/.image-card
+   -- name kept from the original image-based UI) alongside the generated answer (right,
+   .answer-content). See index.html for structure, app.js for the data that fills it in. */
 :root {
     --bg-primary: #f8f9fa;
     --bg-secondary: #ffffff;
@@ -192,6 +195,13 @@ body {
     width: 100%;
     height: auto;
     display: block;
+}
+
+.chunk-text {
+    padding: 12px;
+    font-size: 0.95rem;
+    color: var(--text-primary);
+    white-space: pre-wrap;
 }
 
 /* Answer formatting */

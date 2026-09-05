@@ -1,3 +1,7 @@
+# Wraps qdrant-client to keep all vector-DB details (collection setup, batching, payload
+# shape) in one place. QdrantClient(path=...) runs Qdrant embedded/in-process against local
+# files (no server needed); QdrantClient(url=...) talks to a real Qdrant server (Docker).
+# The caller (watcher.py / app.py) picks which mode based on whether a server is reachable.
 import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PointStruct
@@ -9,17 +13,19 @@ class QdrantManager:
         else:
             self.client = QdrantClient(url=url or "http://localhost:6333")
         self.collection_name = collection_name
-        
+
     def ensure_collection(self, vector_size: int = 1024):
         """
-        Creates the collection if it doesn't exist.
-        The default vector size for Gemini text-embedding-002 is 1024.
+        Creates the collection if it doesn't exist. If it exists but was built with a
+        different embedding dimension (e.g. a previous pipeline used a different model),
+        it is dropped and recreated -- Qdrant collections have a fixed vector size, so a
+        mismatch would make every future insert/search fail.
         """
         if self.client.collection_exists(self.collection_name):
             collection_info = self.client.get_collection(self.collection_name)
             existing_size = None
             vectors_config = collection_info.config.params.vectors
-            
+
             # Extract existing size from config
             if hasattr(vectors_config, 'size'):
                 existing_size = vectors_config.size
@@ -28,7 +34,7 @@ class QdrantManager:
                     existing_size = vectors_config[''].size
                 elif len(vectors_config) > 0:
                     existing_size = list(vectors_config.values())[0].size
-            
+
             if existing_size != vector_size:
                 print(f"Dimension mismatch: existing collection size is {existing_size}, but required size is {vector_size}.")
                 print(f"Recreating collection '{self.collection_name}' with size {vector_size}...")
@@ -38,6 +44,8 @@ class QdrantManager:
             print(f"Creating collection '{self.collection_name}' with size {vector_size}...")
             self.client.create_collection(
                 collection_name=self.collection_name,
+                # COSINE distance is the standard choice for comparing embedding vectors --
+                # it measures direction (semantic similarity), not magnitude.
                 vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE),
             )
         else:
@@ -46,6 +54,8 @@ class QdrantManager:
     def insert_image_embeddings(self, embeddings: list[list[float]], base64_images: list[str], batch_size: int = 20):
         """
         Inserts a list of image embeddings into Qdrant in batches, along with the base64 images as payload.
+        Legacy path from the original image-based pipeline (see src/embedding_service/main.py);
+        the live text-chunk pipeline uses insert_text_chunks() below instead.
         """
         print(f"Inserting {len(embeddings)} points into Qdrant in batches of {batch_size}...")
         points = []
@@ -72,6 +82,8 @@ class QdrantManager:
     def search(self, query_embedding: list[float], limit: int = 1) -> list[str]:
         """
         Searches the vector DB using the query embedding and returns the top matched base64 images.
+        Legacy path from the original image-based pipeline; the live pipeline uses
+        search_text_chunks() below instead.
         """
         print(f"Searching Qdrant for top {limit} matches...")
         search_result = self.client.query_points(
@@ -79,10 +91,60 @@ class QdrantManager:
             query=query_embedding,
             limit=limit
         )
-        
+
         base64_images = []
         for hit in search_result.points:
             if hit.payload and "image_base64" in hit.payload:
                 base64_images.append(hit.payload["image_base64"])
-        
+
         return base64_images
+
+    def insert_text_chunks(self, embeddings: list[list[float]], chunks: list[dict], source_file: str = None, batch_size: int = 20):
+        """
+        Inserts a list of text-chunk embeddings into Qdrant in batches. Each point's
+        payload carries the chunk's original text (so it can be shown to the user and fed
+        back to the LLM as context) plus page/source metadata for citation.
+        Batching (default 20 at a time) avoids sending one huge request for large PDFs.
+        """
+        print(f"Inserting {len(embeddings)} points into Qdrant in batches of {batch_size}...")
+        points = []
+        for emb, chunk in zip(embeddings, chunks):
+            # Random UUID per chunk -- we don't need stable/deterministic IDs since chunks
+            # aren't updated in place, only re-ingested wholesale when a PDF changes.
+            point_id = str(uuid.uuid4())
+            payload = {"text": chunk["text"], "page_number": chunk.get("page_number")}
+            if source_file:
+                payload["source_file"] = source_file
+            points.append(PointStruct(id=point_id, vector=emb, payload=payload))
+
+        for i in range(0, len(points), batch_size):
+            batch = points[i:i + batch_size]
+            total_batches = (len(points) - 1) // batch_size + 1
+            print(f"Uploading batch {i // batch_size + 1}/{total_batches} ({len(batch)} points)...")
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=batch
+            )
+        print("Insertion complete.")
+
+    def search_text_chunks(self, query_embedding: list[float], limit: int = 3) -> list[dict]:
+        """
+        Vector-similarity search: finds the `limit` chunks whose embeddings are closest to
+        the query embedding, and returns their text + metadata for use as LLM context.
+        """
+        print(f"Searching Qdrant for top {limit} matches...")
+        search_result = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_embedding,
+            limit=limit
+        )
+
+        results = []
+        for hit in search_result.points:
+            if hit.payload and "text" in hit.payload:
+                results.append({
+                    "text": hit.payload["text"],
+                    "page_number": hit.payload.get("page_number"),
+                    "source_file": hit.payload.get("source_file"),
+                })
+        return results

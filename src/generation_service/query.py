@@ -1,3 +1,6 @@
+# Command-line equivalent of the /query endpoint in app.py -- same embed -> search ->
+# generate pipeline, useful for quick testing without spinning up the FastAPI server or UI.
+# Example: uv run python -m src.generation_service.query "What is the service ceiling?"
 import os
 import sys
 import argparse
@@ -70,22 +73,22 @@ def main():
 
     # 3. Retrieve Context from Qdrant
     try:
-        print(f"Retrieving top {args.limit} matching pages from Qdrant...")
-        top_base64_images = qdrant_manager.search(query_embedding, limit=args.limit)
-        
-        if not top_base64_images:
-            print("No matching document pages found in vector DB.")
+        print(f"Retrieving top {args.limit} matching chunks from Qdrant...")
+        top_chunks = qdrant_manager.search_text_chunks(query_embedding, limit=args.limit)
+
+        if not top_chunks:
+            print("No matching document chunks found in vector DB.")
             sys.exit(0)
-            
-        print(f"Successfully retrieved {len(top_base64_images)} context page(s).")
+
+        print(f"Successfully retrieved {len(top_chunks)} context chunk(s).")
     except Exception as e:
         print(f"Failed to search Qdrant: {e}")
         sys.exit(1)
 
     # 4. Generate Answer via Gemini LLM
     try:
-        print("Submitting question and context pages to Gemini LLM...")
-        answer = rag_llm.answer_question(args.question, top_base64_images)
+        print("Submitting question and context chunks to Gemini LLM...")
+        answer = rag_llm.answer_question(args.question, top_chunks)
         print("\n" + "=" * 60)
         print("Answer:")
         print(answer)

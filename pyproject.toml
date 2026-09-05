@@ -18,4 +18,5 @@ dependencies = [
     "pdf2image",
     "pillow",
     "google-genai",
+    "unstructured[pdf]>=0.16",
 ]

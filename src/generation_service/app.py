@@ -1,3 +1,7 @@
+# FastAPI service exposing the RAG pipeline over HTTP (used by the UI/app.js and any
+# other client). Query flow per request: embed question -> vector search in Qdrant ->
+# feed retrieved chunks + question to Gemini -> return the answer plus the chunks used,
+# so the UI can show "reference excerpts" alongside the answer.
 import os
 import sys
 import urllib.request
@@ -40,6 +44,10 @@ embedder = None
 rag_llm = None
 
 def init_qdrant_manager(collection_name):
+    # Probe for a real Qdrant server (e.g. the Docker container from docker-compose.yml)
+    # first; if none responds within 1s, fall back to the embedded local-file client
+    # pointed at ./qdrant_storage. This lets the exact same code run in Docker (server
+    # mode) or on a bare laptop with no Docker running (local mode).
     qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:6333")
     use_server = False
     try:
@@ -48,7 +56,7 @@ def init_qdrant_manager(collection_name):
                 use_server = True
     except Exception:
         pass
-        
+
     if use_server:
         print(f"Connected to Qdrant Docker server at {qdrant_url}")
         return QdrantManager(url=qdrant_url, collection_name=collection_name)
@@ -59,6 +67,9 @@ def init_qdrant_manager(collection_name):
 
 @app.on_event("startup")
 def startup_event():
+    # Clients are created once at process startup (not per-request) since each holds a
+    # connection/HTTP client that's expensive to set up repeatedly. Stored as module-level
+    # globals so query_rag() and health_check() below can reach them.
     global qdrant_manager, embedder, rag_llm
     collection_name = os.environ.get("COLLECTION_NAME", "financial_documents")
     print("Initializing clients for generation service...")
@@ -76,12 +87,14 @@ def startup_event():
 
 @app.options("/query")
 def options_query():
+    # Explicit handler for CORS preflight requests (browsers send OPTIONS before a
+    # cross-origin POST); CORSMiddleware above handles the actual headers.
     return {}
 
 @app.post("/query", response_model=QueryResponse, status_code=status.HTTP_200_OK)
 def query_rag(request: QueryRequest):
     global qdrant_manager, embedder, rag_llm
-    
+
     if not qdrant_manager or not embedder or not rag_llm:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -97,31 +110,31 @@ def query_rag(request: QueryRequest):
             detail=f"Failed to generate query embedding: {e}"
         )
 
-    # 2. Retrieve matched pages from Qdrant
+    # 2. Retrieve matched text chunks from Qdrant
     try:
-        top_base64_images = qdrant_manager.search(query_embedding, limit=request.limit)
+        top_chunks = qdrant_manager.search_text_chunks(query_embedding, limit=request.limit)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to search Qdrant vector DB: {e}"
         )
 
-    if not top_base64_images:
+    if not top_chunks:
         return QueryResponse(
             question=request.question,
             answer="No matching document context was found in the database.",
             pages_retrieved=0,
-            images=[]
+            chunks=[]
         )
 
     # 3. Generate answer via Gemini LLM
     try:
-        answer = rag_llm.answer_question(request.question, top_base64_images)
+        answer = rag_llm.answer_question(request.question, top_chunks)
         return QueryResponse(
             question=request.question,
             answer=answer,
-            pages_retrieved=len(top_base64_images),
-            images=top_base64_images
+            pages_retrieved=len(top_chunks),
+            chunks=top_chunks
         )
     except Exception as e:
         raise HTTPException(
